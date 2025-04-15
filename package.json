@@ -1,0 +1,17 @@
+{
+    "name": "docauth-backend",
+    "version": "1.0.0",
+    "type": "module",
+    "main": "index.mjs",
+    "scripts": {
+      "start": "node index.mjs"
+    },
+    "dependencies": {
+      "cors": "^2.8.5",
+      "express": "^4.18.2",
+      "jose": "^4.14.4",
+      "base64url": "^3.0.1",
+      "did-jwt": "^7.1.0"
+    }
+  }
+  
