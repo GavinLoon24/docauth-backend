@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>DID Login</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: linear-gradient(to right, #dfe9f3, #ffffff);
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+    header {
+      text-align: center;
+      padding: 30px 20px 10px;
+    }
+    header h1 {
+      font-size: 2em;
+      color: #007acc;
+    }
+    .card {
+      background: white;
+      padding: 25px;
+      border-radius: 15px;
+      box-shadow: 0 6px 15px rgba(0, 0, 0, 0.1);
+      width: 90%;
+      max-width: 600px;
+      margin: 20px 0;
+    }
+    .card h2 {
+      color: #007acc;
+      margin-bottom: 15px;
+      border-bottom: 1px solid #eee;
+      padding-bottom: 8px;
+    }
+    .card label {
+      font-weight: bold;
+      margin-top: 10px;
+      display: block;
+    }
+    textarea, input[type="text"], input[type="file"] {
+      width: 100%;
+      padding: 10px;
+      margin-top: 5px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+      font-family: monospace;
+    }
+    button {
+      background: #007acc;
+      color: white;
+      border: none;
+      padding: 12px;
+      margin-top: 15px;
+      width: 100%;
+      font-size: 16px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #005fa3;
+    }
+    #qrDisplay {
+      margin-top: 15px;
+      text-align: center;
+    }
+    #loginResult {
+      margin-top: 20px;
+      white-space: pre-wrap;
+      background: #f5f5f5;
+      padding: 10px;
+      border-radius: 8px;
+    }
+    footer {
+      margin-top: auto;
+      padding: 20px;
+      font-size: 0.9em;
+      color: #666;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>BlockChain Document Decentralized Login</h1>
+    <p>By Loon Chee Yong - Master Student, Multimedia University</p>
+  </header>
+
+  <div class="card">
+    <h2>🆕 New User</h2>
+    <button onclick="generateDid()">Generate DID + Private Key</button>
+
+    <div id="qrDisplay" style="display: none;">
+      <h3>📷 Download & Save Your Keys</h3>
+      <img id="qrImage" />
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>🔐 Existing User Login</h2>
+    <label for="didInput">Your DID</label>
+    <input id="didInput" placeholder="Paste your DID here" />
+
+    <label for="privateKeyInput">Your Private Key (JWK)</label>
+    <textarea id="privateKeyInput" rows="5" placeholder="Paste your private JWK here"></textarea>
+
+    <label for="qrUpload">📷 Or Upload QR Code</label>
+    <input type="file" id="qrUpload" accept="image/*" onchange="scanQRFromFile()" />
+
+    <button onclick="loginWithDID()">✅ Sign and Login</button>
+
+    <div id="loginResult"></div>
+  </div>
+
+  <footer>&copy; 2025 Loon Chee Yong | Final Year Project</footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr/dist/jsQR.js"></script>
+  <script>
+    let currentDID = ''
+    let privateKeyJWK = null
+    let currentChallenge = ''
+
+    async function generateDid() {
+      const res = await fetch('/generate-did')
+      const data = await res.json()
+      currentDID = data.did
+      privateKeyJWK = data.privateKeyJwk
+
+      document.getElementById('didInput').value = currentDID
+      document.getElementById('privateKeyInput').value = JSON.stringify(privateKeyJWK, null, 2)
+
+      const qrData = JSON.stringify({ did: currentDID, privateKeyJwk: privateKeyJWK })
+      const qrUrl = await QRCode.toDataURL(qrData)
+      document.getElementById('qrImage').src = qrUrl
+      document.getElementById('qrDisplay').style.display = 'block'
+    }
+
+    async function loginWithDID() {
+      const did = document.getElementById('didInput').value.trim()
+      const privateKeyRaw = document.getElementById('privateKeyInput').value.trim()
+      if (!did || !privateKeyRaw) {
+        alert('❗ Please enter both DID and private key')
+        return
+      }
+
+      try {
+        const parsedKey = JSON.parse(privateKeyRaw)
+        const challengeRes = await fetch(`/login-challenge/${encodeURIComponent(did)}`)
+        const { challenge } = await challengeRes.json()
+        currentChallenge = challenge
+
+        const signRes = await fetch('/sign-challenge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ did, challenge, privateKeyJwk: parsedKey })
+        })
+
+        const { jwt, error } = await signRes.json()
+        if (!jwt) {
+          document.getElementById('loginResult').textContent = `❌ Sign Error: ${error}`
+          return
+        }
+
+        const verifyRes = await fetch('/verify-signature', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jwt })
+        })
+
+        const result = await verifyRes.json()
+
+        if (result.success) {
+          localStorage.setItem('token', jwt)
+          localStorage.setItem('did', result.did)
+          document.getElementById('loginResult').textContent = `✅ Signature verified!\nDID: ${result.did}`
+          setTimeout(() => {
+            window.location.href = '/index.html'
+          }, 1500)
+        } else {
+          document.getElementById('loginResult').textContent = `⚠️ Verification failed\n\n${JSON.stringify(result, null, 2)}`
+        }
+      } catch (err) {
+        console.error(err)
+        document.getElementById('loginResult').textContent = `❌ Error: ${err.message}`
+      }
+    }
+
+    async function scanQRFromFile() {
+      const file = document.getElementById('qrUpload').files[0]
+      if (!file) return
+
+      const reader = new FileReader()
+      reader.onload = function (e) {
+        const img = new Image()
+        img.onload = function () {
+          const canvas = document.createElement('canvas')
+          canvas.width = img.width
+          canvas.height = img.height
+          const ctx = canvas.getContext('2d')
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+          const code = jsQR(imageData.data, canvas.width, canvas.height)
+          if (code && code.data) {
+            try {
+              const parsed = JSON.parse(code.data)
+              document.getElementById('didInput').value = parsed.did
+              document.getElementById('privateKeyInput').value = JSON.stringify(parsed.privateKeyJwk, null, 2)
+              alert('✅ QR scanned successfully!')
+            } catch (err) {
+              alert('❌ Invalid QR content')
+            }
+          } else {
+            alert('❌ QR code not recognized')
+          }
+        }
+        img.src = e.target.result
+      }
+      reader.readAsDataURL(file)
+    }
+  </script>
+</body>
+</html>

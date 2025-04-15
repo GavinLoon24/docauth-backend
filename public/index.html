@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Document Authentication System</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #eef2f3;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+    header {
+      text-align: center;
+      padding: 30px 20px 10px;
+    }
+    header h1 {
+      font-size: 2em;
+      color: #007acc;
+    }
+    .card {
+      background: white;
+      padding: 25px;
+      border-radius: 15px;
+      box-shadow: 0 6px 15px rgba(0, 0, 0, 0.1);
+      width: 90%;
+      max-width: 500px;
+      margin: 20px 0;
+    }
+    .card h2 {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    input[type="file"] {
+      width: 100%;
+      margin-bottom: 12px;
+    }
+    button {
+      padding: 12px;
+      width: 100%;
+      background: #007acc;
+      border: none;
+      border-radius: 8px;
+      color: white;
+      font-size: 16px;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+    button:hover {
+      background: #005fa3;
+    }
+    .preview {
+      margin: 10px 0;
+      text-align: center;
+    }
+    iframe, img {
+      width: 100%;
+      max-height: 300px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+    }
+    #result {
+      white-space: pre-line;
+      font-size: 0.95em;
+      margin-top: 10px;
+      text-align: left;
+    }
+    footer {
+      margin-top: auto;
+      padding: 20px;
+      font-size: 0.9em;
+      color: #666;
+      text-align: center;
+    }
+    #logout {
+      background-color: #dc3545;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Document Authentication System</h1>
+    <p>By Loon Chee Yong - Master Student, Multimedia University</p>
+  </header>
+
+  <div class="card">
+    <h2>👤 Welcome</h2>
+    <p><strong>DID:</strong> <span id="userDid"></span></p>
+    <button onclick="logout()">Logout</button>
+  </div>
+
+  <div class="card">
+    <h2>📤 Add Document</h2>
+    <input type="file" id="fileInput" onchange="previewFile()" />
+    <div class="preview" id="preview"></div>
+    <button onclick="uploadDocument()">Upload Document</button>
+  </div>
+
+  <div class="card">
+    <h2>🔎 Verify Document</h2>
+    <input type="file" id="verifyInput" onchange="previewFile(true)" />
+    <div class="preview" id="verifyPreview"></div>
+    <button onclick="verifyDocument()">Verify Document</button>
+    <div id="result"></div>
+  </div>
+
+  <footer>&copy; 2025 Loon Chee Yong | Final Year Project</footer>
+
+  <script>
+    const token = localStorage.getItem('token');
+    const did = localStorage.getItem('did');
+
+    if (!token || !did) {
+      alert("❌ No valid login session. Redirecting to DID login...");
+      window.location.href = "/did-login.html";
+    } else {
+      document.getElementById('userDid').textContent = did;
+    }
+
+    function logout() {
+      localStorage.removeItem('token');
+      localStorage.removeItem('did');
+      alert("👋 Logged out!");
+      window.location.href = "/did-login.html";
+    }
+
+    function previewFile(isVerify = false) {
+      const input = document.getElementById(isVerify ? 'verifyInput' : 'fileInput');
+      const preview = document.getElementById(isVerify ? 'verifyPreview' : 'preview');
+      const file = input.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = function (e) {
+        if (file.type === 'application/pdf') {
+          preview.innerHTML = `<iframe src="${e.target.result}"></iframe>`;
+        } else if (file.type.startsWith('image/')) {
+          preview.innerHTML = `<img src="${e.target.result}" alt="preview"/>`;
+        } else {
+          preview.innerHTML = `<p>📁 Preview not available for this file type.</p>`;
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+
+    async function uploadDocument() {
+      const file = document.getElementById('fileInput').files[0];
+      if (!file) return alert("Please select a file.");
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const res = await fetch('/add-document', {
+        method: 'POST',
+        headers: { Authorization: token },
+        body: formData
+      });
+
+      const data = await res.json();
+      alert(data.success
+        ? `✅ Document uploaded!\nVersion: v${data.version}\nHash: ${data.versionedHash}`
+        : `❌ Error: ${data.error}`);
+    }
+
+    async function verifyDocument() {
+      const file = document.getElementById('verifyInput').files[0];
+      if (!file) return alert("Please select a file.");
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const res = await fetch('/verify-document', {
+        method: 'POST',
+        body: formData
+      });
+
+      const data = await res.json();
+      if (data.exists && data.document) {
+        const doc = data.document;
+        document.getElementById('result').innerText =
+          `✅ Document FOUND!\nOwner: ${doc.owner}\nTimestamp: ${doc.timestamp}\nVersion: v${data.version}\nDID: ${doc.did}`;
+      } else {
+        document.getElementById('result').innerText = `❌ Document NOT found on blockchain.`;
+      }
+    }
+  </script>
+</body>
+</html>
