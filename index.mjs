@@ -1,6 +1,3 @@
-import { webcrypto } from 'crypto'
-globalThis.crypto = webcrypto
-
 import express from 'express'
 import cors from 'cors'
 import path from 'path'
@@ -9,7 +6,6 @@ import fs from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
 import base64url from 'base64url'
-import multer from 'multer'
 import { importJWK, SignJWT } from 'jose'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -21,32 +17,30 @@ app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 app.use(express.static(path.join(__dirname, 'public')))
 
-const upload = multer({ storage: multer.memoryStorage() })
-
-// 🧠 In-memory challenge and document storage
 const challenges = new Map()
-const documents = new Map()
+const documentStore = new Map()
 
 // ✅ Serve login page
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'did-login.html'))
 })
 
-// ✅ Generate new DID + private key
+// ✅ Serve main app page
+app.get('/index.html', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'))
+})
+
+// ✅ Generate DID + Key
 app.get('/generate-did', (req, res) => {
   const keyPair = crypto.generateKeyPairSync('ed25519')
   const privateKey = keyPair.privateKey.export({ format: 'jwk' })
   const publicKey = keyPair.publicKey.export({ format: 'jwk' })
   const did = `did:key:z${crypto.randomBytes(16).toString('hex')}`
 
-  res.json({
-    did,
-    privateKeyJwk: privateKey,
-    publicKeyJwk: publicKey
-  })
+  res.json({ did, privateKeyJwk: privateKey, publicKeyJwk: publicKey })
 })
 
-// ✅ Challenge API
+// ✅ Login Challenge
 app.get('/login-challenge/:did', (req, res) => {
   const { did } = req.params
   const challenge = crypto.randomBytes(32).toString('hex')
@@ -55,10 +49,9 @@ app.get('/login-challenge/:did', (req, res) => {
   res.json({ challenge })
 })
 
-// ✅ Sign challenge using private JWK
+// ✅ Sign Challenge (Server-side signing for demo)
 app.post('/sign-challenge', async (req, res) => {
   const { did, challenge, privateKeyJwk } = req.body
-
   if (!did || !challenge || !privateKeyJwk) {
     return res.status(400).json({ error: 'Missing fields' })
   }
@@ -80,7 +73,7 @@ app.post('/sign-challenge', async (req, res) => {
   }
 })
 
-// ✅ Verify signed challenge
+// ✅ Verify Signature
 app.post('/verify-signature', async (req, res) => {
   const { jwt } = req.body
 
@@ -107,80 +100,60 @@ app.post('/verify-signature', async (req, res) => {
   }
 })
 
-// ✅ Add document
-app.post('/add-document', upload.single('file'), (req, res) => {
-  const token = req.headers.authorization
-  if (!token || !req.file) {
-    return res.status(400).json({ success: false, error: 'Missing file or DID token' })
-  }
+// ✅ Add Document
+app.post('/add-document', async (req, res) => {
+  const chunks = []
+  req.on('data', chunk => chunks.push(chunk))
+  req.on('end', () => {
+    const boundary = req.headers['content-type'].split('boundary=')[1]
+    const buffer = Buffer.concat(chunks)
+    const content = buffer.toString()
+    const base64 = content.split('\r\n\r\n')[1].split('\r\n')[0]
+    const fileBuffer = Buffer.from(base64, 'binary')
 
-  let did = 'unknown'
-  try {
-    const payload = JSON.parse(base64url.decode(token.split('.')[1]))
-    did = payload.iss || payload.sub
-  } catch (e) {
-    console.warn('❌ Failed to extract DID from JWT:', e.message)
-  }
+    const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex')
+    const versionedHash = `${hash}_v1`
 
-  const hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex')
-  let version = 1
-  let versionedHash = `${hash}_v${version}`
+    const did = req.headers['authorization']
+    if (!did) return res.status(401).json({ error: 'Missing DID' })
 
-  while (documents.has(versionedHash)) {
-    version++
-    versionedHash = `${hash}_v${version}`
-  }
+    documentStore.set(versionedHash, {
+      hash,
+      version: 1,
+      owner: did,
+      timestamp: new Date().toISOString(),
+      did
+    })
 
-  documents.set(versionedHash, {
-    did,
-    owner: did,
-    fileName: req.file.originalname,
-    timestamp: new Date().toISOString()
+    console.log(`📥 Stored document ${versionedHash} by ${did}`)
+    res.json({ success: true, versionedHash, version: 1, owner: did })
   })
-
-  console.log(`📥 Stored document ${versionedHash} by ${did}`)
-  res.json({ success: true, version, versionedHash })
 })
 
-// ✅ Verify document
-app.post('/verify-document', upload.single('file'), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ success: false, error: 'Missing file' })
-  }
+// ✅ Verify Document
+app.post('/verify-document', async (req, res) => {
+  const chunks = []
+  req.on('data', chunk => chunks.push(chunk))
+  req.on('end', () => {
+    const buffer = Buffer.concat(chunks)
+    const hash = crypto.createHash('sha256').update(buffer).digest('hex')
+    const versionedHash = `${hash}_v1`
 
-  const hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex')
-  let version = 1
-  let latest = null
-
-  while (true) {
-    const key = `${hash}_v${version}`
-    if (documents.has(key)) {
-      latest = { ...documents.get(key), version }
-      version++
+    const doc = documentStore.get(versionedHash)
+    if (doc) {
+      res.json({ exists: true, version: 1, document: doc })
     } else {
-      break
+      res.json({ exists: false })
     }
-  }
-
-  if (!latest) {
-    return res.json({ success: true, exists: false })
-  }
-
-  res.json({
-    success: true,
-    exists: true,
-    version: latest.version,
-    document: latest
   })
 })
 
-// ✅ Fallback route
+// ✅ Fallback
 app.use((req, res) => {
   res.status(404).send('❌ Route not found')
 })
 
-// ✅ Start server
-const PORT = 3000
+const PORT = process.env.PORT || 3000
 app.listen(PORT, () => {
   console.log(`✅ Server running at http://localhost:${PORT}`)
 })
