@@ -183,8 +183,17 @@
       const data = await res.json();
       if (data.exists && data.document) {
         const doc = data.document;
+        const formattedTime = new Date(doc.timestamp).toLocaleString('en-SG', {
+          timeZone: 'Asia/Singapore',
+          dateStyle: 'medium',
+          timeStyle: 'short'
+        });
+
         document.getElementById('result').innerText =
-          `✅ Document FOUND!\nOwner: ${doc.owner}\nTimestamp: ${doc.timestamp}\nVersion: v${data.version}\nDID: ${doc.did}`;
+          `✅ Document FOUND!\n` +
+          `Version: v${data.version}\n` +
+          `Timestamp: ${formattedTime}\n` +
+          `DID: ${doc.did}`;
       } else {
         document.getElementById('result').innerText = `❌ Document NOT found on blockchain.`;
       }
