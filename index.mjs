@@ -1,3 +1,6 @@
+import { webcrypto } from 'crypto'
+globalThis.crypto = webcrypto
+
 import express from 'express'
 import cors from 'cors'
 import path from 'path'
@@ -5,32 +8,41 @@ import crypto from 'crypto'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
+import multer from 'multer'
 import base64url from 'base64url'
 import { importJWK, SignJWT } from 'jose'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
-
 const app = express()
+const upload = multer()
+
 app.use(cors())
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 app.use(express.static(path.join(__dirname, 'public')))
 
-const challenges = new Map()
-const documentStore = new Map()
+const PORT = 3000
 
-// ✅ Serve login page
+// ✅ Document Store (persistent)
+const DATA_FILE = path.join(__dirname, 'documents.json')
+let documentStore = fs.existsSync(DATA_FILE)
+  ? new Map(Object.entries(JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'))))
+  : new Map()
+
+function saveStoreToDisk() {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(Object.fromEntries(documentStore)))
+}
+
+// ✅ Challenge store
+const challenges = new Map()
+
+// ✅ Serve Login Page
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'did-login.html'))
 })
 
-// ✅ Serve main app page
-app.get('/index.html', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'))
-})
-
-// ✅ Generate DID + Key
+// ✅ Generate new DID + Private Key (JWK)
 app.get('/generate-did', (req, res) => {
   const keyPair = crypto.generateKeyPairSync('ed25519')
   const privateKey = keyPair.privateKey.export({ format: 'jwk' })
@@ -40,7 +52,7 @@ app.get('/generate-did', (req, res) => {
   res.json({ did, privateKeyJwk: privateKey, publicKeyJwk: publicKey })
 })
 
-// ✅ Login Challenge
+// ✅ Issue Challenge
 app.get('/login-challenge/:did', (req, res) => {
   const { did } = req.params
   const challenge = crypto.randomBytes(32).toString('hex')
@@ -49,7 +61,7 @@ app.get('/login-challenge/:did', (req, res) => {
   res.json({ challenge })
 })
 
-// ✅ Sign Challenge (Server-side signing for demo)
+// ✅ Sign Challenge
 app.post('/sign-challenge', async (req, res) => {
   const { did, challenge, privateKeyJwk } = req.body
   if (!did || !challenge || !privateKeyJwk) {
@@ -58,7 +70,6 @@ app.post('/sign-challenge', async (req, res) => {
 
   try {
     const privateKey = await importJWK(privateKeyJwk, 'EdDSA')
-
     const jwt = await new SignJWT({ challenge })
       .setProtectedHeader({ alg: 'EdDSA' })
       .setIssuer(did)
@@ -76,7 +87,6 @@ app.post('/sign-challenge', async (req, res) => {
 // ✅ Verify Signature
 app.post('/verify-signature', async (req, res) => {
   const { jwt } = req.body
-
   try {
     const payload = JSON.parse(base64url.decode(jwt.split('.')[1]))
     const did = payload.iss
@@ -100,60 +110,67 @@ app.post('/verify-signature', async (req, res) => {
   }
 })
 
-// ✅ Add Document
-app.post('/add-document', async (req, res) => {
-  const chunks = []
-  req.on('data', chunk => chunks.push(chunk))
-  req.on('end', () => {
-    const boundary = req.headers['content-type'].split('boundary=')[1]
-    const buffer = Buffer.concat(chunks)
-    const content = buffer.toString()
-    const base64 = content.split('\r\n\r\n')[1].split('\r\n')[0]
-    const fileBuffer = Buffer.from(base64, 'binary')
+// ✅ Upload Document
+app.post('/add-document', upload.single('file'), (req, res) => {
+  const fileBuffer = req.file?.buffer
+  if (!fileBuffer) return res.status(400).json({ error: 'No file received' })
 
-    const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex')
-    const versionedHash = `${hash}_v1`
+  const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex')
+  const did = req.headers['authorization']
+  if (!did) return res.status(401).json({ error: 'Missing DID' })
 
-    const did = req.headers['authorization']
-    if (!did) return res.status(401).json({ error: 'Missing DID' })
+  // 🧠 Check versioning
+  let version = 1
+  while (documentStore.has(`${hash}_v${version}`)) version++
+  const versionedHash = `${hash}_v${version}`
 
-    documentStore.set(versionedHash, {
-      hash,
-      version: 1,
-      owner: did,
-      timestamp: new Date().toISOString(),
-      did
-    })
+  const docMeta = {
+    hash,
+    version,
+    versionedHash,
+    timestamp: new Date().toISOString(),
+    owner: did,
+    did
+  }
 
-    console.log(`📥 Stored document ${versionedHash} by ${did}`)
-    res.json({ success: true, versionedHash, version: 1, owner: did })
-  })
+  documentStore.set(versionedHash, docMeta)
+  saveStoreToDisk()
+
+  console.log(`📥 Stored document ${versionedHash} by ${did}`)
+  res.json({ success: true, ...docMeta })
 })
 
 // ✅ Verify Document
-app.post('/verify-document', async (req, res) => {
-  const chunks = []
-  req.on('data', chunk => chunks.push(chunk))
-  req.on('end', () => {
-    const buffer = Buffer.concat(chunks)
-    const hash = crypto.createHash('sha256').update(buffer).digest('hex')
-    const versionedHash = `${hash}_v1`
+app.post('/verify-document', upload.single('file'), (req, res) => {
+  const fileBuffer = req.file?.buffer
+  if (!fileBuffer) return res.status(400).json({ error: 'No file received' })
 
-    const doc = documentStore.get(versionedHash)
-    if (doc) {
-      res.json({ exists: true, version: 1, document: doc })
+  const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex')
+
+  // Check latest version
+  let foundVersion = null
+  for (let i = 1; i <= 100; i++) {
+    const key = `${hash}_v${i}`
+    if (documentStore.has(key)) {
+      foundVersion = i
     } else {
-      res.json({ exists: false })
+      break
     }
-  })
+  }
+
+  if (foundVersion) {
+    const doc = documentStore.get(`${hash}_v${foundVersion}`)
+    return res.json({ exists: true, version: foundVersion, document: doc })
+  } else {
+    return res.json({ exists: false })
+  }
 })
 
-// ✅ Fallback
+// ✅ 404 Fallback
 app.use((req, res) => {
   res.status(404).send('❌ Route not found')
 })
 
-const PORT = process.env.PORT || 3000
 app.listen(PORT, () => {
   console.log(`✅ Server running at http://localhost:${PORT}`)
 })
